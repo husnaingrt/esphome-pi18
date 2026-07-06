@@ -1,6 +1,7 @@
 substitutions:
   name: maxpowerinverter
   device_description: "Monitor and control a pipsolar inverter via RS232"
+  project_version: "1.0.1"
   # start here; if no data, try 9600
   baudrate: 2400
   # ESP32 DevKit v1 TX1
@@ -22,7 +23,7 @@ esphome:
   min_version: 2024.6.0
   project:
     name: "husnaingrt.pi18"
-    version: 1.0.0
+    version: ${project_version}
 
 esp32:
   board: esp32dev
@@ -139,20 +140,6 @@ sensor:
       if (isnan(id(pv1_energy_Wh).state)) return NAN;
       return id(pv1_energy_Wh).state / 1000.0;
   - platform: template
-    name: "Output Power Factor"
-    id: output_power_factor
-    unit_of_measurement: ""
-    accuracy_decimals: 2
-    update_interval: 5s
-    lambda: |-
-      auto p = id(output_active_power).state;
-      auto s = id(output_apparent_power).state;
-      if (isnan(p) || isnan(s) || s <= 0) return NAN;
-      float pf = p / s;
-      if (pf > 1.0f) pf = 1.0f;
-      if (pf < 0.0f) pf = 0.0f;
-      return pf;
-  - platform: template
     name: "PV1 Current"
     id: pv1_current
     unit_of_measurement: A
@@ -194,6 +181,20 @@ text_sensor:
     command_response:
       name: "PI18 Command Response"
       id: pi18_command_response
+  - platform: template
+    name: "Output Power Factor"
+    icon: mdi:percent
+    update_interval: 5s
+    lambda: |-
+      auto p = id(output_active_power).state;
+      auto s = id(output_apparent_power).state;
+      if (isnan(p) || isnan(s) || s <= 0) return {};
+      float pf = p / s;
+      if (pf > 1.0f) pf = 1.0f;
+      if (pf < 0.0f) pf = 0.0f;
+      char buffer[8];
+      snprintf(buffer, sizeof(buffer), "%.2f", pf);
+      return std::string(buffer);
 
 text:
   - platform: pi18
