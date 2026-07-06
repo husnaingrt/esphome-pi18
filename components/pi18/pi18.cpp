@@ -107,11 +107,66 @@ namespace esphome
 
                 return value;
             }
+
+            constexpr std::array<const char *, 2> INPUT_VOLTAGE_RANGE_OPTIONS = {"Appliance", "UPS"};
+            constexpr std::array<const char *, 2> OUTPUT_SOURCE_PRIORITY_OPTIONS = {
+                "Solar-Utility-Battery",
+                "Solar-Battery-Utility",
+            };
+            constexpr std::array<const char *, 3> CHARGER_SOURCE_PRIORITY_OPTIONS = {
+                "Solar first",
+                "Solar and Utility",
+                "Only solar",
+            };
+            constexpr std::array<const char *, 3> BATTERY_TYPE_OPTIONS = {
+                "AGM",
+                "Flooded",
+                "User",
+            };
+            constexpr std::array<const char *, 2> SOLAR_POWER_PRIORITY_OPTIONS = {
+                "Battery-Load-Utility",
+                "Load-Battery-Utility",
+            };
+            constexpr std::array<const char *, 5> OUTPUT_MODEL_OPTIONS = {
+                "Single module",
+                "Parallel output",
+                "Phase 1 of three phase output",
+                "Phase 2 of three phase output",
+                "Phase 3 of three phase output",
+            };
+            constexpr std::array<const char *, 2> AC_OUTPUT_FREQUENCY_OPTIONS = {"50 Hz", "60 Hz"};
+            constexpr std::array<const char *, 2> MACHINE_TYPE_OPTIONS = {"Off-Grid Tie", "Grid-Tie"};
+
+            template<size_t N> void publish_select_state(select::Select *select, const std::array<const char *, N> &options,
+                                                         uint8_t index)
+            {
+                if (select != nullptr && index < options.size())
+                    select->publish_state(options[index]);
+            }
+
+            inline void publish_number_state(number::Number *number, float value)
+            {
+                if (number != nullptr)
+                    number->publish_state(value);
+            }
+
+            inline void publish_switch_state(switch_::Switch *sw, bool state)
+            {
+                if (sw != nullptr)
+                    sw->publish_state(state);
+            }
+
+            inline bool accepted_response(const std::string &response)
+            {
+                return response.size() >= 2 && response[1] == '1';
+            }
         }  // namespace
 
         void PI18Component::setup()
         {
             ESP_LOGI(TAG, "PI18 driver init (UART %" PRIu32 " baud)", this->parent_->get_baud_rate());
+            this->update();
+            this->sync_configuration_();
         }
 
         void PI18Component::dump_config()
@@ -159,22 +214,23 @@ namespace esphome
                 ESP_LOGW(TAG, "Failed to read GS response");
         }
 
-        std::string PI18Component::build_command_(const std::string &cmd)
+        std::string PI18Component::build_command_(char type, std::string_view cmd)
         {
             // Frame format: "^Pnnn<cmd><crc><cr>" where nnn counts the CRC bytes and the CR.
             const uint16_t len = static_cast<uint16_t>(cmd.size() + 3);
 
             std::array<char, FRAME_HEADER_SIZE> header{};
-            const int written = std::snprintf(header.data(), header.size(), "^P%03u", static_cast<unsigned>(len));
+            const int written = std::snprintf(header.data(), header.size(), "^%c%03u", type, static_cast<unsigned>(len));
             if (written < 0 || written >= static_cast<int>(header.size()))
             {
-                ESP_LOGW(TAG, "Failed to build PI18 command header for %s", cmd.c_str());
+                ESP_LOGW(TAG, "Failed to build PI18 command header for %.*s", static_cast<int>(cmd.size()),
+                         cmd.data());
                 return {};
             }
 
             std::string out(header.data(), static_cast<size_t>(written));
             out.reserve(out.size() + cmd.size() + 3);
-            out += cmd;
+            out.append(cmd.data(), cmd.size());
 
             const uint16_t crc = crc16_pi18_(reinterpret_cast<const uint8_t *>(out.data()), out.size());
             out.push_back(static_cast<char>((crc >> 8) & 0xFF));
@@ -235,7 +291,7 @@ namespace esphome
         {
             this->drain_rx_buffer_();
 
-            std::string request = this->build_command_(cmd);
+            std::string request = this->build_command_('P', cmd);
             if (request.empty())
                 return false;
 
@@ -339,6 +395,12 @@ namespace esphome
                 this->pv1_power_->publish_state(parse_float(fields[16]));
             if (this->pv1_voltage_)
                 this->pv1_voltage_->publish_state(parse_float(fields[18]) / 10.0f);
+            if (this->switches_[SWITCH_LOAD_POWER] != nullptr)
+            {
+                uint8_t load_connected = 0;
+                if (parse_uint8(fields[23], &load_connected))
+                    this->switches_[SWITCH_LOAD_POWER]->publish_state(load_connected != 0);
+            }
 
             return true;
         }
@@ -350,33 +412,346 @@ namespace esphome
             ESP_LOGD(TAG, "%s: %s", label, frame.c_str());
         }
 
+        void PI18Component::sync_configuration_()
+        {
+            std::string frame;
+
+            if (!this->query_("PIRI", frame, GS_QUERY_TIMEOUT_MS))
+                ESP_LOGW(TAG, "Failed to read PIRI response");
+            else
+                this->parse_piri_(frame);
+
+            if (!this->query_("FLAG", frame, MOD_QUERY_TIMEOUT_MS))
+                ESP_LOGW(TAG, "Failed to read FLAG response");
+            else
+                this->parse_flag_(frame);
+        }
+
+        bool PI18Component::parse_piri_(const std::string &frame)
+        {
+            std::string_view view = strip_frame_suffix(frame);
+            const size_t dpos = view.find("^D");
+            if (dpos == std::string_view::npos || view.size() <= dpos + 5)
+            {
+                ESP_LOGW(TAG, "Unexpected PIRI response: %s", frame.c_str());
+                return false;
+            }
+
+            std::string_view csv = view.substr(dpos + 5);
+            const size_t csv_cut = csv.find_first_not_of("0123456789,");
+            if (csv_cut != std::string_view::npos)
+                csv = csv.substr(0, csv_cut);
+
+            std::array<std::string_view, 32> fields{};
+            const size_t field_count = split_csv(csv, fields);
+            if (field_count < 25)
+            {
+                ESP_LOGW(TAG, "Unexpected PIRI field count: %u (need at least 25)", static_cast<unsigned>(field_count));
+                return false;
+            }
+
+            if (uint8_t frequency = 0; parse_uint8(fields[3], &frequency))
+            {
+                if (frequency == 50)
+                    publish_select_state(this->selects_[SELECT_AC_OUTPUT_FREQUENCY], AC_OUTPUT_FREQUENCY_OPTIONS, 0);
+                else if (frequency == 60)
+                    publish_select_state(this->selects_[SELECT_AC_OUTPUT_FREQUENCY], AC_OUTPUT_FREQUENCY_OPTIONS, 1);
+            }
+
+            if (uint8_t battery_type = 0; parse_uint8(fields[13], &battery_type))
+                publish_select_state(this->selects_[SELECT_BATTERY_TYPE], BATTERY_TYPE_OPTIONS, battery_type);
+
+            if (uint8_t input_voltage_range = 0; parse_uint8(fields[16], &input_voltage_range))
+                publish_select_state(this->selects_[SELECT_INPUT_VOLTAGE_RANGE], INPUT_VOLTAGE_RANGE_OPTIONS,
+                                     input_voltage_range);
+
+            if (uint8_t output_source_priority = 0; parse_uint8(fields[17], &output_source_priority))
+                publish_select_state(this->selects_[SELECT_OUTPUT_SOURCE_PRIORITY], OUTPUT_SOURCE_PRIORITY_OPTIONS,
+                                     output_source_priority);
+
+            if (uint8_t charger_source_priority = 0; parse_uint8(fields[18], &charger_source_priority))
+                publish_select_state(this->selects_[SELECT_CHARGER_SOURCE_PRIORITY], CHARGER_SOURCE_PRIORITY_OPTIONS,
+                                     charger_source_priority);
+
+            if (uint8_t machine_type = 0; parse_uint8(fields[20], &machine_type))
+                publish_select_state(this->selects_[SELECT_MACHINE_TYPE], MACHINE_TYPE_OPTIONS, machine_type);
+
+            if (uint8_t output_model = 0; parse_uint8(fields[22], &output_model))
+                publish_select_state(this->selects_[SELECT_OUTPUT_MODEL], OUTPUT_MODEL_OPTIONS, output_model);
+
+            if (uint8_t solar_power_priority = 0; parse_uint8(fields[23], &solar_power_priority))
+                publish_select_state(this->selects_[SELECT_SOLAR_POWER_PRIORITY], SOLAR_POWER_PRIORITY_OPTIONS,
+                                     solar_power_priority);
+
+            publish_number_state(this->numbers_[NUMBER_BATTERY_CUTOFF_VOLTAGE], parse_float(fields[10]) / 10.0f);
+            publish_number_state(this->numbers_[NUMBER_MAX_AC_CHARGING_CURRENT], parse_float(fields[14]));
+            publish_number_state(this->numbers_[NUMBER_MAX_CHARGING_CURRENT], parse_float(fields[15]));
+
+            return true;
+        }
+
+        bool PI18Component::parse_flag_(const std::string &frame)
+        {
+            std::string_view view = strip_frame_suffix(frame);
+            const size_t dpos = view.find("^D");
+            if (dpos == std::string_view::npos || view.size() <= dpos + 5)
+            {
+                ESP_LOGW(TAG, "Unexpected FLAG response: %s", frame.c_str());
+                return false;
+            }
+
+            std::string_view csv = view.substr(dpos + 5);
+            const size_t csv_cut = csv.find_first_not_of("01,");
+            if (csv_cut != std::string_view::npos)
+                csv = csv.substr(0, csv_cut);
+
+            std::array<std::string_view, GS_MAX_FIELDS> fields{};
+            const size_t field_count = split_csv(csv, fields);
+            if (field_count < 8)
+            {
+                ESP_LOGW(TAG, "Unexpected FLAG field count: %u (need at least 8)", static_cast<unsigned>(field_count));
+                return false;
+            }
+
+            uint8_t flag = 0;
+            if (parse_uint8(fields[0], &flag))
+                publish_switch_state(this->switches_[SWITCH_SILENCE_BUZZER], flag != 0);
+            if (parse_uint8(fields[1], &flag))
+                publish_switch_state(this->switches_[SWITCH_OVERLOAD_BYPASS], flag != 0);
+            if (parse_uint8(fields[2], &flag))
+                publish_switch_state(this->switches_[SWITCH_LCD_ESCAPE], flag != 0);
+            if (parse_uint8(fields[3], &flag))
+                publish_switch_state(this->switches_[SWITCH_OVERLOAD_RESTART], flag != 0);
+            if (parse_uint8(fields[4], &flag))
+                publish_switch_state(this->switches_[SWITCH_OVER_TEMP_RESTART], flag != 0);
+            if (parse_uint8(fields[5], &flag))
+                publish_switch_state(this->switches_[SWITCH_BACKLIGHT], flag != 0);
+            if (parse_uint8(fields[6], &flag))
+                publish_switch_state(this->switches_[SWITCH_ALARM_PRIMARY_SOURCE_INTERRUPT], flag != 0);
+            if (parse_uint8(fields[7], &flag))
+                publish_switch_state(this->switches_[SWITCH_FAULT_CODE_RECORD], flag != 0);
+
+            return true;
+        }
+
         void PI18Component::publish_manual_response(const std::string &state)
         {
             if (this->manual_response_text_ != nullptr)
                 this->manual_response_text_->publish_state(state);
         }
 
-        bool PI18Component::send_manual_command(const std::string &cmd, std::string *response, uint32_t timeout_ms)
+        bool PI18Component::send_protocol_command(char type, std::string_view cmd, std::string *response,
+                                                  uint32_t timeout_ms)
         {
             this->drain_rx_buffer_();
 
-            std::string request = this->build_command_(cmd);
+            std::string request = this->build_command_(type, cmd);
             if (request.empty())
                 return false;
 
-            ESP_LOGD(TAG, "Manual TX %s", cmd.c_str());
+            ESP_LOGD(TAG, "%c TX %.*s", type, static_cast<int>(cmd.size()), cmd.data());
             this->write_array(reinterpret_cast<const uint8_t *>(request.data()), request.size());
 
             if (response != nullptr)
             {
                 response->clear();
-                if (timeout_ms > 0 && this->read_frame_(*response, timeout_ms))
-                {
-                    this->log_frame_("MANUAL", *response);
-                }
+                if (timeout_ms <= 0 || !this->read_frame_(*response, timeout_ms))
+                    return false;
             }
 
             return true;
+        }
+
+        void PI18SettingSelect::control(size_t index)
+        {
+            if (this->parent_ == nullptr)
+            {
+                ESP_LOGW(TAG, "PI18 select has no parent");
+                return;
+            }
+
+            char payload[24];
+            const char *label = nullptr;
+            const char *selected = nullptr;
+
+            switch (this->kind_)
+            {
+            case SELECT_INPUT_VOLTAGE_RANGE:
+                if (index >= INPUT_VOLTAGE_RANGE_OPTIONS.size())
+                    return;
+                std::snprintf(payload, sizeof(payload), "PGR%u", static_cast<unsigned>(index));
+                label = "input voltage range";
+                selected = INPUT_VOLTAGE_RANGE_OPTIONS[index];
+                break;
+            case SELECT_OUTPUT_SOURCE_PRIORITY:
+                if (index >= OUTPUT_SOURCE_PRIORITY_OPTIONS.size())
+                    return;
+                std::snprintf(payload, sizeof(payload), "POP%u", static_cast<unsigned>(index));
+                label = "output source priority";
+                selected = OUTPUT_SOURCE_PRIORITY_OPTIONS[index];
+                break;
+            case SELECT_CHARGER_SOURCE_PRIORITY:
+                if (index >= CHARGER_SOURCE_PRIORITY_OPTIONS.size())
+                    return;
+                std::snprintf(payload, sizeof(payload), "PCP0,%u", static_cast<unsigned>(index));
+                label = "charger source priority";
+                selected = CHARGER_SOURCE_PRIORITY_OPTIONS[index];
+                break;
+            case SELECT_BATTERY_TYPE:
+                if (index >= BATTERY_TYPE_OPTIONS.size())
+                    return;
+                std::snprintf(payload, sizeof(payload), "PBT%u", static_cast<unsigned>(index));
+                label = "battery type";
+                selected = BATTERY_TYPE_OPTIONS[index];
+                break;
+            case SELECT_SOLAR_POWER_PRIORITY:
+                if (index >= SOLAR_POWER_PRIORITY_OPTIONS.size())
+                    return;
+                std::snprintf(payload, sizeof(payload), "PSP%u", static_cast<unsigned>(index));
+                label = "solar power priority";
+                selected = SOLAR_POWER_PRIORITY_OPTIONS[index];
+                break;
+            case SELECT_OUTPUT_MODEL:
+                if (index >= OUTPUT_MODEL_OPTIONS.size())
+                    return;
+                std::snprintf(payload, sizeof(payload), "POPM0,%u", static_cast<unsigned>(index));
+                label = "output model";
+                selected = OUTPUT_MODEL_OPTIONS[index];
+                break;
+            case SELECT_AC_OUTPUT_FREQUENCY:
+                if (index >= AC_OUTPUT_FREQUENCY_OPTIONS.size())
+                    return;
+                std::snprintf(payload, sizeof(payload), "%s", index == 0 ? "F50" : "F60");
+                label = "AC output frequency";
+                selected = AC_OUTPUT_FREQUENCY_OPTIONS[index];
+                break;
+            case SELECT_MACHINE_TYPE:
+                if (index >= MACHINE_TYPE_OPTIONS.size())
+                    return;
+                std::snprintf(payload, sizeof(payload), "PI%u", static_cast<unsigned>(index));
+                label = "machine type";
+                selected = MACHINE_TYPE_OPTIONS[index];
+                break;
+            default:
+                ESP_LOGW(TAG, "Unknown PI18 select kind %u", static_cast<unsigned>(this->kind_));
+                return;
+            }
+
+            std::string response;
+            if (!this->parent_->send_protocol_command('S', payload, &response, 1000) || !accepted_response(response))
+            {
+                ESP_LOGW(TAG, "Failed to set %s", label != nullptr ? label : "PI18 select");
+                return;
+            }
+
+            if (selected != nullptr)
+                this->publish_state(selected);
+        }
+
+        void PI18SettingNumber::control(float value)
+        {
+            if (this->parent_ == nullptr)
+            {
+                ESP_LOGW(TAG, "PI18 number has no parent");
+                return;
+            }
+
+            char payload[32];
+            float set_value = value;
+
+            switch (this->kind_)
+            {
+            case NUMBER_BATTERY_CUTOFF_VOLTAGE:
+                set_value = std::clamp(value, 40.0f, 48.0f);
+                std::snprintf(payload, sizeof(payload), "PSDV%03u",
+                              static_cast<unsigned>(std::lroundf(set_value * 10.0f)));
+                break;
+            case NUMBER_MAX_AC_CHARGING_CURRENT:
+                set_value = std::clamp(value, 0.0f, 9.0f);
+                std::snprintf(payload, sizeof(payload), "MUCHGC0,%03u",
+                              static_cast<unsigned>(std::lroundf(set_value)));
+                break;
+            case NUMBER_MAX_CHARGING_CURRENT:
+                set_value = std::clamp(value, 0.0f, 9.0f);
+                std::snprintf(payload, sizeof(payload), "MCHGC0,%03u", static_cast<unsigned>(std::lroundf(set_value)));
+                break;
+            default:
+                ESP_LOGW(TAG, "Unknown PI18 number kind %u", static_cast<unsigned>(this->kind_));
+                return;
+            }
+
+            std::string response;
+            if (!this->parent_->send_protocol_command('S', payload, &response, 1000) || !accepted_response(response))
+            {
+                ESP_LOGW(TAG, "Failed to set PI18 number");
+                return;
+            }
+
+            this->publish_state(set_value);
+        }
+
+        void PI18SettingSwitch::write_state(bool state)
+        {
+            if (this->parent_ == nullptr)
+            {
+                ESP_LOGW(TAG, "PI18 switch has no parent");
+                return;
+            }
+
+            char payload[16];
+            const char *label = nullptr;
+
+            switch (this->kind_)
+            {
+            case SWITCH_LOAD_POWER:
+                std::snprintf(payload, sizeof(payload), "LON%u", state ? 1U : 0U);
+                label = "load power";
+                break;
+            case SWITCH_SILENCE_BUZZER:
+                std::snprintf(payload, sizeof(payload), "PA%u", state ? 1U : 0U);
+                label = "silence buzzer";
+                break;
+            case SWITCH_OVERLOAD_BYPASS:
+                std::snprintf(payload, sizeof(payload), "PB%u", state ? 1U : 0U);
+                label = "overload bypass";
+                break;
+            case SWITCH_LCD_ESCAPE:
+                std::snprintf(payload, sizeof(payload), "PC%u", state ? 1U : 0U);
+                label = "LCD default page escape";
+                break;
+            case SWITCH_OVERLOAD_RESTART:
+                std::snprintf(payload, sizeof(payload), "PD%u", state ? 1U : 0U);
+                label = "overload restart";
+                break;
+            case SWITCH_OVER_TEMP_RESTART:
+                std::snprintf(payload, sizeof(payload), "PE%u", state ? 1U : 0U);
+                label = "over temperature restart";
+                break;
+            case SWITCH_BACKLIGHT:
+                std::snprintf(payload, sizeof(payload), "PF%u", state ? 1U : 0U);
+                label = "backlight";
+                break;
+            case SWITCH_ALARM_PRIMARY_SOURCE_INTERRUPT:
+                std::snprintf(payload, sizeof(payload), "PG%u", state ? 1U : 0U);
+                label = "primary source alarm";
+                break;
+            case SWITCH_FAULT_CODE_RECORD:
+                std::snprintf(payload, sizeof(payload), "PH%u", state ? 1U : 0U);
+                label = "fault code record";
+                break;
+            default:
+                ESP_LOGW(TAG, "Unknown PI18 switch kind %u", static_cast<unsigned>(this->kind_));
+                return;
+            }
+
+            std::string response;
+            if (!this->parent_->send_protocol_command('S', payload, &response, 1000) || !accepted_response(response))
+            {
+                ESP_LOGW(TAG, "Failed to set %s", label != nullptr ? label : "PI18 switch");
+                return;
+            }
+
+            this->publish_state(state);
         }
 
         void PI18Component::publish_mode_(uint8_t code)

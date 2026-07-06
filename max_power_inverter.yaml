@@ -196,6 +196,78 @@ text_sensor:
       snprintf(buffer, sizeof(buffer), "%.2f", pf);
       return std::string(buffer);
 
+select:
+  - platform: pi18
+    pi18_id: pi18_hub
+    input_voltage_range:
+      name: "Input Voltage Range"
+      id: input_voltage_range
+    output_source_priority:
+      name: "Output Source Priority"
+      id: output_source_priority
+    charger_source_priority:
+      name: "Charger Source Priority"
+      id: charger_source_priority
+    battery_type:
+      name: "Battery Type"
+      id: battery_type
+    solar_power_priority:
+      name: "Solar Power Priority"
+      id: solar_power_priority
+    output_model:
+      name: "Output Model"
+      id: output_model
+    ac_output_frequency:
+      name: "AC Output Frequency"
+      id: ac_output_frequency_setting
+    machine_type:
+      name: "Machine Type"
+      id: machine_type
+
+number:
+  - platform: pi18
+    pi18_id: pi18_hub
+    battery_cut_off_voltage:
+      name: "Battery Cut-Off Voltage"
+      id: battery_cut_off_voltage
+    max_ac_charging_current:
+      name: "Max AC Charging Current"
+      id: max_ac_charging_current
+    max_charging_current:
+      name: "Max Charging Current"
+      id: max_charging_current
+
+switch:
+  - platform: pi18
+    pi18_id: pi18_hub
+    load_power:
+      name: "Load Power"
+      id: load_power
+    silence_buzzer:
+      name: "Silence Buzzer"
+      id: silence_buzzer
+    overload_bypass:
+      name: "Overload Bypass"
+      id: overload_bypass
+    lcd_escape:
+      name: "LCD Escape"
+      id: lcd_escape
+    overload_restart:
+      name: "Overload Restart"
+      id: overload_restart
+    over_temp_restart:
+      name: "Over Temp Restart"
+      id: over_temp_restart
+    backlight:
+      name: "Backlight"
+      id: backlight
+    alarm_primary_source_interrupt:
+      name: "Alarm On Primary Source Interrupt"
+      id: alarm_primary_source_interrupt
+    fault_code_record:
+      name: "Fault Code Record"
+      id: fault_code_record
+
 text:
   - platform: pi18
     pi18_id: pi18_hub
