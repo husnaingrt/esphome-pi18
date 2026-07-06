@@ -1,15 +1,31 @@
 #pragma once
 #include "esphome/components/uart/uart.h"
 #include "esphome/components/sensor/sensor.h"
+#include "esphome/components/text/text.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/core/component.h"
 #include "esphome/core/log.h"
+#include <cstdint>
+#include <string>
 #include <vector>
 
 namespace esphome
 {
     namespace pi18
     {
+
+        class PI18Component;
+
+        class PI18CommandText : public text::Text, public Component
+        {
+        public:
+            void set_parent(PI18Component *parent) { this->parent_ = parent; }
+            void dump_config() override;
+
+        protected:
+            void control(const std::string &value) override;
+            PI18Component *parent_{nullptr};
+        };
 
         class PI18Component : public PollingComponent, public uart::UARTDevice
         {
@@ -30,6 +46,10 @@ namespace esphome
             void set_pv1_power_sensor(sensor::Sensor *s) { pv1_power_ = s; }
             void set_pv1_voltage_sensor(sensor::Sensor *s) { pv1_voltage_ = s; }
             void set_mode_text_sensor(text_sensor::TextSensor *ts) { mode_text_ = ts; }
+            void set_manual_response_text_sensor(text_sensor::TextSensor *ts) { manual_response_text_ = ts; }
+            bool has_manual_response_text_sensor() const { return this->manual_response_text_ != nullptr; }
+            void publish_manual_response(const std::string &state);
+            bool send_manual_command(const std::string &cmd, std::string *response = nullptr, uint32_t timeout_ms = 0);
 
             void setup() override;
             void update() override;
@@ -53,12 +73,17 @@ namespace esphome
             sensor::Sensor *pv1_power_{nullptr};
             sensor::Sensor *pv1_voltage_{nullptr};
             text_sensor::TextSensor *mode_text_{nullptr};
+            text_sensor::TextSensor *manual_response_text_{nullptr};
 
             // helpers
             std::string build_command_(const std::string &cmd);
-            bool read_line_(std::string &out, uint32_t timeout_ms);
+            bool query_(const char *cmd, std::string &frame, uint32_t timeout_ms);
+            bool read_frame_(std::string &out, uint32_t timeout_ms);
+            void drain_rx_buffer_();
+            bool parse_mod_(const std::string &frame);
             bool parse_gs_(const std::string &payload);
             void publish_mode_(uint8_t code);
+            void log_frame_(const char *label, std::string frame) const;
 
             // pi18 CRC (16-bit). See protocol docs & open-source implementations.
             static uint16_t crc16_pi18_(const uint8_t *data, size_t len);

@@ -5,10 +5,14 @@ from . import PI18Component
 
 CONF_PI18_ID = "pi18_id"
 CONF_MODE = "mode"
+CONF_COMMAND_RESPONSE = "command_response"
 
 CONFIG_SCHEMA = cv.Schema({
     cv.Required(CONF_PI18_ID): cv.use_id(PI18Component),
     cv.Optional(CONF_MODE): text_sensor.text_sensor_schema(),
+    cv.Optional(CONF_COMMAND_RESPONSE): text_sensor.text_sensor_schema(
+        icon="mdi:message-text", entity_category="diagnostic"
+    ),
 })
 
 async def to_code(config):
@@ -16,3 +20,6 @@ async def to_code(config):
     if CONF_MODE in config:
         ts = await text_sensor.new_text_sensor(config[CONF_MODE])
         cg.add(hub.set_mode_text_sensor(ts))
+    if CONF_COMMAND_RESPONSE in config:
+        ts = await text_sensor.new_text_sensor(config[CONF_COMMAND_RESPONSE])
+        cg.add(hub.set_manual_response_text_sensor(ts))

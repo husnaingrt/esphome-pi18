@@ -1,0 +1,207 @@
+substitutions:
+  name: maxpowerinverter
+  device_description: "Monitor and control a pipsolar inverter via RS232"
+  # start here; if no data, try 9600
+  baudrate: 2400
+  # ESP32 DevKit v1 TX1
+  tx1_pin: GPIO1
+  # ESP32 DevKit v1 RX1
+  rx1_pin: GPIO3
+  # ESP32 DevKit v1 TX2
+  tx2_pin: GPIO17
+  # ESP32 DevKit v1 RX1
+  rx2_pin: GPIO16
+  # ESP32 DevKit v1 D25
+  d25_pin: GPIO25
+  # ESP32 DevKit v1 D26
+  d26_pin: GPIO26
+  
+esphome:
+  name: ${name}
+  friendly_name: MaxPowerInverter
+  min_version: 2024.6.0
+  project:
+    name: "husnaingrt.pi18"
+    version: 1.0.0
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+ota:
+  - platform: esphome
+    password: "818ec9c9fd715e8b2b31021c587a76a6"
+
+logger:
+  baud_rate: 115200
+  level: DEBUG
+
+api:
+  encryption:
+    key: "4e/CqdqGI9eMDvhAuMH/my7KkHexpguuBLy/aJEAuH8="
+    
+# Fetch the bridge as an external component (supported by ESPHome)
+external_components:
+  - source: 
+      type: local
+      path: components
+  
+uart:
+  id: uart_pipsolar
+  tx_pin: ${d25_pin}
+  rx_pin: ${d26_pin}
+  baud_rate: ${baudrate}
+  parity: NONE
+  stop_bits: 1
+  rx_buffer_size: 1024
+  rx_full_threshold: 1
+  rx_timeout: 2
+  debug:
+    direction: BOTH
+    after:
+      delimiter: "\r"
+    debug_prefix: "[pi18] "
+
+# --- PI18 component ---
+pi18:
+  id: pi18_hub
+  uart_id: uart_pipsolar
+  update_interval: 2s
+
+sensor:
+  - platform: pi18
+    pi18_id: pi18_hub
+    grid_voltage:
+      name: "Grid Voltage"
+      id: grid_voltage
+    grid_frequency:
+      name: "Grid Frequency"
+      id: grid_frequency
+    ac_output_voltage:
+      name: "AC Output Voltage"
+      id: ac_output_voltage
+    ac_output_frequency:
+      name: "AC Output Frequency"
+      id: ac_output_frequency
+    output_apparent_power:
+      name: "Output Apparent Power"
+      id: output_apparent_power
+    output_active_power:
+      name: "Output Active Power"
+      id: output_active_power
+    load_percent:
+      name: "Load Percent"
+      id: load_percent
+    battery_voltage:
+      name: "Battery Voltage"
+      id: battery_voltage
+    battery_charge_current:
+      name: "Battery Charge Current"
+      id: battery_charge_current
+    battery_discharge_current:
+      name: "Battery Discharge Current"
+      id: battery_discharge_current
+    battery_capacity:
+      name: "Battery Capacity"
+      id: battery_capacity
+    heatsink_temperature:
+      name: "Inverter Heatsink Temperature"
+      id: inverter_heatsink_temperature
+    pv1_power:
+      name: "PV1 Power"
+      id: pv1_power
+    pv1_voltage:
+      name: "PV1 Voltage"
+      id: pv1_voltage
+      
+  - platform: integration
+    name: "PV1 Energy"
+    sensor: pv1_power
+    time_unit: h
+    unit_of_measurement: Wh
+    state_class: total_increasing
+    device_class: energy
+    id: pv1_energy_Wh
+  - platform: template
+    name: "PV1 Energy (kWh)"
+    id: pv1_energy_kWh
+    unit_of_measurement: kWh
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    update_interval: 30s
+    lambda: |-
+      if (isnan(id(pv1_energy_Wh).state)) return NAN;
+      return id(pv1_energy_Wh).state / 1000.0;
+  - platform: template
+    name: "Output Power Factor"
+    id: output_power_factor
+    unit_of_measurement: ""
+    accuracy_decimals: 2
+    update_interval: 5s
+    lambda: |-
+      auto p = id(output_active_power).state;
+      auto s = id(output_apparent_power).state;
+      if (isnan(p) || isnan(s) || s <= 0) return NAN;
+      float pf = p / s;
+      if (pf > 1.0f) pf = 1.0f;
+      if (pf < 0.0f) pf = 0.0f;
+      return pf;
+  - platform: template
+    name: "PV1 Current"
+    id: pv1_current
+    unit_of_measurement: A
+    accuracy_decimals: 1
+    update_interval: 5s
+    lambda: |-
+      auto p = id(pv1_power).state;
+      auto v = id(pv1_voltage).state;
+      if (isnan(p) || isnan(v) || v <= 0) return NAN;
+      return p / v;
+
+binary_sensor:
+  # Quick presence flags (robust even if protocol flags vary)
+  - platform: template
+    name: "Grid Present"
+    device_class: power
+    lambda: |-
+      auto gv = id(grid_voltage).state;
+      return (!isnan(gv) && gv > 50.0);
+  - platform: template
+    name: "PV Input Present"
+    device_class: power
+    lambda: |-
+      auto v = id(pv1_voltage).state;
+      return (!isnan(v) && v > 60.0);
+  - platform: template
+    name: "Charging (Battery)"
+    device_class: battery_charging
+    lambda: |-
+      auto a = id(battery_charge_current).state;
+      return (!isnan(a) && a > 0.4);
+
+text_sensor:
+  - platform: pi18
+    pi18_id: pi18_hub
+    mode:
+      name: "Inverter Mode"
+      id: inverter_mode
+    command_response:
+      name: "PI18 Command Response"
+      id: pi18_command_response
+
+text:
+  - platform: pi18
+    pi18_id: pi18_hub
+    name: "PI18 Manual Command"
+    id: pi18_manual_command
+
+# --- Buttons ------------------------------------------------------------------
+button:
+  - platform: restart
+    name: "ESP32 Restart"

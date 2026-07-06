@@ -3,7 +3,7 @@ import esphome.config_validation as cv
 from esphome.components import uart
 from esphome.const import CONF_ID, CONF_UPDATE_INTERVAL
 
-AUTO_LOAD = ["uart", "sensor", "text_sensor", "switch", "select", "number"]
+AUTO_LOAD = ["uart", "sensor", "text_sensor", "text", "switch", "select", "number"]
 DEPENDENCIES = ["uart"]
 MULTI_CONF = False
 
