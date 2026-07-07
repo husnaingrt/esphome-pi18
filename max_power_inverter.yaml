@@ -227,6 +227,18 @@ select:
 number:
   - platform: pi18
     pi18_id: pi18_hub
+    battery_max_charge_voltage:
+      name: "Battery Max Charge Voltage"
+      id: battery_max_charge_voltage
+    battery_float_voltage:
+      name: "Battery Float Voltage"
+      id: battery_float_voltage
+    battery_recharge_voltage:
+      name: "Battery Recharge Voltage"
+      id: battery_recharge_voltage
+    battery_redischarge_voltage:
+      name: "Battery Redischarge Voltage"
+      id: battery_redischarge_voltage
     battery_cut_off_voltage:
       name: "Battery Cut-Off Voltage"
       id: battery_cut_off_voltage

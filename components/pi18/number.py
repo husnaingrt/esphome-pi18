@@ -11,6 +11,10 @@ from esphome.const import (
 from . import (
     CONF_PI18_ID,
     NUMBER_BATTERY_CUTOFF_VOLTAGE,
+    NUMBER_BATTERY_FLOAT_VOLTAGE,
+    NUMBER_BATTERY_MAX_CHARGE_VOLTAGE,
+    NUMBER_BATTERY_RECHARGE_VOLTAGE,
+    NUMBER_BATTERY_REDISCHARGE_VOLTAGE,
     NUMBER_MAX_AC_CHARGING_CURRENT,
     NUMBER_MAX_CHARGING_CURRENT,
     PI18Component,
@@ -20,6 +24,42 @@ from . import (
 PI18SettingNumber = pi18_ns.class_("PI18SettingNumber", number.Number)
 
 NUMBER_SETTINGS = (
+    (
+        "battery_max_charge_voltage",
+        NUMBER_BATTERY_MAX_CHARGE_VOLTAGE,
+        48.0,
+        58.4,
+        0.1,
+        UNIT_VOLT,
+        DEVICE_CLASS_VOLTAGE,
+    ),
+    (
+        "battery_float_voltage",
+        NUMBER_BATTERY_FLOAT_VOLTAGE,
+        48.0,
+        58.4,
+        0.1,
+        UNIT_VOLT,
+        DEVICE_CLASS_VOLTAGE,
+    ),
+    (
+        "battery_recharge_voltage",
+        NUMBER_BATTERY_RECHARGE_VOLTAGE,
+        44.0,
+        51.0,
+        0.1,
+        UNIT_VOLT,
+        DEVICE_CLASS_VOLTAGE,
+    ),
+    (
+        "battery_redischarge_voltage",
+        NUMBER_BATTERY_REDISCHARGE_VOLTAGE,
+        44.0,
+        51.0,
+        0.1,
+        UNIT_VOLT,
+        DEVICE_CLASS_VOLTAGE,
+    ),
     (
         "battery_cut_off_voltage",
         NUMBER_BATTERY_CUTOFF_VOLTAGE,

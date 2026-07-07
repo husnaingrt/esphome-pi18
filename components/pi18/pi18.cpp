@@ -483,7 +483,40 @@ namespace esphome
                 publish_select_state(this->selects_[SELECT_SOLAR_POWER_PRIORITY], SOLAR_POWER_PRIORITY_OPTIONS,
                                      solar_power_priority);
 
-            publish_number_state(this->numbers_[NUMBER_BATTERY_CUTOFF_VOLTAGE], parse_float(fields[10]) / 10.0f);
+            if (float battery_recharge_voltage = parse_float(fields[8]); !std::isnan(battery_recharge_voltage))
+            {
+                this->battery_recharge_voltage_ = battery_recharge_voltage / 10.0f;
+                this->has_battery_recharge_voltage_ = true;
+                publish_number_state(this->numbers_[NUMBER_BATTERY_RECHARGE_VOLTAGE],
+                                     this->battery_recharge_voltage_);
+            }
+
+            if (float battery_redischarge_voltage = parse_float(fields[9]); !std::isnan(battery_redischarge_voltage))
+            {
+                this->battery_redischarge_voltage_ = battery_redischarge_voltage / 10.0f;
+                this->has_battery_redischarge_voltage_ = true;
+                publish_number_state(this->numbers_[NUMBER_BATTERY_REDISCHARGE_VOLTAGE],
+                                     this->battery_redischarge_voltage_);
+            }
+
+            if (float battery_cut_off_voltage = parse_float(fields[10]); !std::isnan(battery_cut_off_voltage))
+                publish_number_state(this->numbers_[NUMBER_BATTERY_CUTOFF_VOLTAGE], battery_cut_off_voltage / 10.0f);
+
+            if (float battery_max_charge_voltage = parse_float(fields[11]); !std::isnan(battery_max_charge_voltage))
+            {
+                this->battery_max_charge_voltage_ = battery_max_charge_voltage / 10.0f;
+                this->has_battery_max_charge_voltage_ = true;
+                publish_number_state(this->numbers_[NUMBER_BATTERY_MAX_CHARGE_VOLTAGE],
+                                     this->battery_max_charge_voltage_);
+            }
+
+            if (float battery_float_voltage = parse_float(fields[12]); !std::isnan(battery_float_voltage))
+            {
+                this->battery_float_voltage_ = battery_float_voltage / 10.0f;
+                this->has_battery_float_voltage_ = true;
+                publish_number_state(this->numbers_[NUMBER_BATTERY_FLOAT_VOLTAGE], this->battery_float_voltage_);
+            }
+
             publish_number_state(this->numbers_[NUMBER_MAX_AC_CHARGING_CURRENT], parse_float(fields[14]));
             publish_number_state(this->numbers_[NUMBER_MAX_CHARGING_CURRENT], parse_float(fields[15]));
 
@@ -667,6 +700,50 @@ namespace esphome
                 std::snprintf(payload, sizeof(payload), "PSDV%03u",
                               static_cast<unsigned>(std::lroundf(set_value * 10.0f)));
                 break;
+            case NUMBER_BATTERY_MAX_CHARGE_VOLTAGE:
+            {
+                set_value = std::clamp(value, 48.0f, 58.4f);
+                const float float_voltage = this->parent_->has_battery_float_voltage()
+                                                ? this->parent_->battery_float_voltage()
+                                                : set_value;
+                std::snprintf(payload, sizeof(payload), "MCHGV%03u,%03u",
+                              static_cast<unsigned>(std::lroundf(set_value * 10.0f)),
+                              static_cast<unsigned>(std::lroundf(float_voltage * 10.0f)));
+                break;
+            }
+            case NUMBER_BATTERY_FLOAT_VOLTAGE:
+            {
+                set_value = std::clamp(value, 48.0f, 58.4f);
+                const float max_charge_voltage = this->parent_->has_battery_max_charge_voltage()
+                                                     ? this->parent_->battery_max_charge_voltage()
+                                                     : set_value;
+                std::snprintf(payload, sizeof(payload), "MCHGV%03u,%03u",
+                              static_cast<unsigned>(std::lroundf(max_charge_voltage * 10.0f)),
+                              static_cast<unsigned>(std::lroundf(set_value * 10.0f)));
+                break;
+            }
+            case NUMBER_BATTERY_RECHARGE_VOLTAGE:
+            {
+                set_value = std::clamp(value, 44.0f, 51.0f);
+                const float redischarge_voltage = this->parent_->has_battery_redischarge_voltage()
+                                                      ? this->parent_->battery_redischarge_voltage()
+                                                      : set_value;
+                std::snprintf(payload, sizeof(payload), "BUCD%03u,%03u",
+                              static_cast<unsigned>(std::lroundf(set_value * 10.0f)),
+                              static_cast<unsigned>(std::lroundf(redischarge_voltage * 10.0f)));
+                break;
+            }
+            case NUMBER_BATTERY_REDISCHARGE_VOLTAGE:
+            {
+                set_value = std::clamp(value, 44.0f, 51.0f);
+                const float recharge_voltage = this->parent_->has_battery_recharge_voltage()
+                                                   ? this->parent_->battery_recharge_voltage()
+                                                   : set_value;
+                std::snprintf(payload, sizeof(payload), "BUCD%03u,%03u",
+                              static_cast<unsigned>(std::lroundf(recharge_voltage * 10.0f)),
+                              static_cast<unsigned>(std::lroundf(set_value * 10.0f)));
+                break;
+            }
             case NUMBER_MAX_AC_CHARGING_CURRENT:
                 set_value = std::clamp(value, 0.0f, 9.0f);
                 std::snprintf(payload, sizeof(payload), "MUCHGC0,%03u",
@@ -689,6 +766,23 @@ namespace esphome
             }
 
             this->publish_state(set_value);
+            switch (this->kind_)
+            {
+            case NUMBER_BATTERY_MAX_CHARGE_VOLTAGE:
+                this->parent_->set_battery_max_charge_voltage(set_value);
+                break;
+            case NUMBER_BATTERY_FLOAT_VOLTAGE:
+                this->parent_->set_battery_float_voltage(set_value);
+                break;
+            case NUMBER_BATTERY_RECHARGE_VOLTAGE:
+                this->parent_->set_battery_recharge_voltage(set_value);
+                break;
+            case NUMBER_BATTERY_REDISCHARGE_VOLTAGE:
+                this->parent_->set_battery_redischarge_voltage(set_value);
+                break;
+            default:
+                break;
+            }
         }
 
         void PI18SettingSwitch::write_state(bool state)

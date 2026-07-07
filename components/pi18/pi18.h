@@ -37,6 +37,10 @@ namespace esphome
             NUMBER_BATTERY_CUTOFF_VOLTAGE = 0,
             NUMBER_MAX_AC_CHARGING_CURRENT,
             NUMBER_MAX_CHARGING_CURRENT,
+            NUMBER_BATTERY_MAX_CHARGE_VOLTAGE,
+            NUMBER_BATTERY_FLOAT_VOLTAGE,
+            NUMBER_BATTERY_RECHARGE_VOLTAGE,
+            NUMBER_BATTERY_REDISCHARGE_VOLTAGE,
             NUMBER_KIND_COUNT,
         };
 
@@ -131,6 +135,34 @@ namespace esphome
                 if (kind < SWITCH_KIND_COUNT)
                     this->switches_[kind] = sw;
             }
+            bool has_battery_max_charge_voltage() const { return this->has_battery_max_charge_voltage_; }
+            float battery_max_charge_voltage() const { return this->battery_max_charge_voltage_; }
+            void set_battery_max_charge_voltage(float value)
+            {
+                this->battery_max_charge_voltage_ = value;
+                this->has_battery_max_charge_voltage_ = true;
+            }
+            bool has_battery_float_voltage() const { return this->has_battery_float_voltage_; }
+            float battery_float_voltage() const { return this->battery_float_voltage_; }
+            void set_battery_float_voltage(float value)
+            {
+                this->battery_float_voltage_ = value;
+                this->has_battery_float_voltage_ = true;
+            }
+            bool has_battery_recharge_voltage() const { return this->has_battery_recharge_voltage_; }
+            float battery_recharge_voltage() const { return this->battery_recharge_voltage_; }
+            void set_battery_recharge_voltage(float value)
+            {
+                this->battery_recharge_voltage_ = value;
+                this->has_battery_recharge_voltage_ = true;
+            }
+            bool has_battery_redischarge_voltage() const { return this->has_battery_redischarge_voltage_; }
+            float battery_redischarge_voltage() const { return this->battery_redischarge_voltage_; }
+            void set_battery_redischarge_voltage(float value)
+            {
+                this->battery_redischarge_voltage_ = value;
+                this->has_battery_redischarge_voltage_ = true;
+            }
             bool has_manual_response_text_sensor() const { return this->manual_response_text_ != nullptr; }
             void publish_manual_response(const std::string &state);
             bool send_protocol_command(char type, std::string_view cmd, std::string *response = nullptr,
@@ -165,6 +197,14 @@ namespace esphome
             sensor::Sensor *heatsink_temperature_{nullptr};
             sensor::Sensor *pv1_power_{nullptr};
             sensor::Sensor *pv1_voltage_{nullptr};
+            float battery_max_charge_voltage_{0.0f};
+            bool has_battery_max_charge_voltage_{false};
+            float battery_float_voltage_{0.0f};
+            bool has_battery_float_voltage_{false};
+            float battery_recharge_voltage_{0.0f};
+            bool has_battery_recharge_voltage_{false};
+            float battery_redischarge_voltage_{0.0f};
+            bool has_battery_redischarge_voltage_{false};
             text_sensor::TextSensor *mode_text_{nullptr};
             text_sensor::TextSensor *manual_response_text_{nullptr};
             std::array<select::Select *, SELECT_KIND_COUNT> selects_{};
