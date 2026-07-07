@@ -628,7 +628,8 @@ namespace esphome
             case SELECT_MACHINE_TYPE:
                 if (index >= MACHINE_TYPE_OPTIONS.size())
                     return;
-                std::snprintf(payload, sizeof(payload), "PI%u", static_cast<unsigned>(index));
+                // PI18 uses the generic enable/disable command format: P + state + parameter.
+                std::snprintf(payload, sizeof(payload), "P%cI", index == 0 ? 'D' : 'E');
                 label = "machine type";
                 selected = MACHINE_TYPE_OPTIONS[index];
                 break;
@@ -708,35 +709,35 @@ namespace esphome
                 label = "load power";
                 break;
             case SWITCH_SILENCE_BUZZER:
-                std::snprintf(payload, sizeof(payload), "PA%u", state ? 1U : 0U);
+                std::snprintf(payload, sizeof(payload), "P%cA", state ? 'E' : 'D');
                 label = "silence buzzer";
                 break;
             case SWITCH_OVERLOAD_BYPASS:
-                std::snprintf(payload, sizeof(payload), "PB%u", state ? 1U : 0U);
+                std::snprintf(payload, sizeof(payload), "P%cB", state ? 'E' : 'D');
                 label = "overload bypass";
                 break;
             case SWITCH_LCD_ESCAPE:
-                std::snprintf(payload, sizeof(payload), "PC%u", state ? 1U : 0U);
+                std::snprintf(payload, sizeof(payload), "P%cC", state ? 'E' : 'D');
                 label = "LCD default page escape";
                 break;
             case SWITCH_OVERLOAD_RESTART:
-                std::snprintf(payload, sizeof(payload), "PD%u", state ? 1U : 0U);
+                std::snprintf(payload, sizeof(payload), "P%cD", state ? 'E' : 'D');
                 label = "overload restart";
                 break;
             case SWITCH_OVER_TEMP_RESTART:
-                std::snprintf(payload, sizeof(payload), "PE%u", state ? 1U : 0U);
+                std::snprintf(payload, sizeof(payload), "P%cE", state ? 'E' : 'D');
                 label = "over temperature restart";
                 break;
             case SWITCH_BACKLIGHT:
-                std::snprintf(payload, sizeof(payload), "PF%u", state ? 1U : 0U);
+                std::snprintf(payload, sizeof(payload), "P%cF", state ? 'E' : 'D');
                 label = "backlight";
                 break;
             case SWITCH_ALARM_PRIMARY_SOURCE_INTERRUPT:
-                std::snprintf(payload, sizeof(payload), "PG%u", state ? 1U : 0U);
+                std::snprintf(payload, sizeof(payload), "P%cG", state ? 'E' : 'D');
                 label = "primary source alarm";
                 break;
             case SWITCH_FAULT_CODE_RECORD:
-                std::snprintf(payload, sizeof(payload), "PH%u", state ? 1U : 0U);
+                std::snprintf(payload, sizeof(payload), "P%cH", state ? 'E' : 'D');
                 label = "fault code record";
                 break;
             default:
