@@ -166,8 +166,7 @@ namespace esphome
         {
             if (this->parent_ == nullptr)
             {
-                ESP_LOGE(TAG, "UART parent not configured, skipping PI18 setup");
-                this->mark_failed();
+                ESP_LOGW(TAG, "UART parent not configured, delaying PI18 setup");
                 return;
             }
             ESP_LOGI(TAG, "PI18 driver init (UART %" PRIu32 " baud)", this->parent_->get_baud_rate());
@@ -183,6 +182,12 @@ namespace esphome
 
         void PI18Component::update()
         {
+            if (this->parent_ == nullptr)
+            {
+                ESP_LOGW(TAG, "UART parent not configured, skipping PI18 update");
+                return;
+            }
+
             std::string frame;
 
             bool mod_ok = false;
