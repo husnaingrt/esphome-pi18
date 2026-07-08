@@ -178,7 +178,7 @@ namespace esphome
             float get_setup_priority() const override { return setup_priority::DATA; }
 
         private:
-            void sync_configuration_();
+            bool sync_configuration_();
             bool parse_piri_(const std::string &frame);
             bool parse_flag_(const std::string &frame);
 
@@ -205,6 +205,7 @@ namespace esphome
             bool has_battery_recharge_voltage_{false};
             float battery_redischarge_voltage_{0.0f};
             bool has_battery_redischarge_voltage_{false};
+            bool initial_config_synced_{false};
             text_sensor::TextSensor *mode_text_{nullptr};
             text_sensor::TextSensor *manual_response_text_{nullptr};
             std::array<select::Select *, SELECT_KIND_COUNT> selects_{};

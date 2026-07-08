@@ -170,8 +170,6 @@ namespace esphome
                 return;
             }
             ESP_LOGI(TAG, "PI18 driver init (UART %" PRIu32 " baud)", this->parent_->get_baud_rate());
-            this->update();
-            this->sync_configuration_();
         }
 
         void PI18Component::dump_config()
@@ -223,6 +221,9 @@ namespace esphome
             }
             if (!gs_ok)
                 ESP_LOGW(TAG, "Failed to read GS response");
+
+            if (mod_ok && gs_ok && !this->initial_config_synced_)
+                this->initial_config_synced_ = this->sync_configuration_();
         }
 
         std::string PI18Component::build_command_(char type, std::string_view cmd)
@@ -423,19 +424,28 @@ namespace esphome
             ESP_LOGD(TAG, "%s: %s", label, frame.c_str());
         }
 
-        void PI18Component::sync_configuration_()
+        bool PI18Component::sync_configuration_()
         {
             std::string frame;
+            bool ok = true;
 
             if (!this->query_("PIRI", frame, GS_QUERY_TIMEOUT_MS))
+            {
                 ESP_LOGW(TAG, "Failed to read PIRI response");
+                ok = false;
+            }
             else
                 this->parse_piri_(frame);
 
             if (!this->query_("FLAG", frame, MOD_QUERY_TIMEOUT_MS))
+            {
                 ESP_LOGW(TAG, "Failed to read FLAG response");
+                ok = false;
+            }
             else
                 this->parse_flag_(frame);
+
+            return ok;
         }
 
         bool PI18Component::parse_piri_(const std::string &frame)
