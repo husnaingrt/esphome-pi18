@@ -11,6 +11,7 @@
 #include <string_view>
 
 #include "esphome/core/helpers.h"
+#include "esphome/core/application.h"
 
 namespace esphome
 {
@@ -170,6 +171,7 @@ namespace esphome
                 return;
             }
             ESP_LOGI(TAG, "PI18 driver init (UART %" PRIu32 " baud)", this->parent_->get_baud_rate());
+            this->initial_sync_phase_ = InitialSyncPhase::PIRI;
         }
 
         void PI18Component::dump_config()
@@ -186,44 +188,37 @@ namespace esphome
                 return;
             }
 
+            if (!this->polling_enabled_)
+                return;
+
+            if (!this->initial_config_synced_)
+            {
+                if (this->sync_configuration_())
+                {
+                    this->initial_config_synced_ = true;
+                    this->poll_mod_next_ = true;
+                    ESP_LOGI(TAG, "PI18 initial configuration synced");
+                }
+                return;
+            }
+
             std::string frame;
+            bool query_ok = false;
 
-            bool mod_ok = false;
-            for (uint8_t attempt = 0; attempt <= QUERY_RETRY_COUNT && !mod_ok; ++attempt)
+            if (this->poll_mod_next_)
             {
-                if (attempt > 0)
-                {
-                    ESP_LOGW(TAG, "Retrying MOD query (%u/%u)", static_cast<unsigned>(attempt + 1),
-                             static_cast<unsigned>(QUERY_RETRY_COUNT + 1));
-                }
-
-                if (!this->query_("MOD", frame, MOD_QUERY_TIMEOUT_MS))
-                    continue;
-
-                mod_ok = this->parse_mod_(frame);
+                query_ok = this->query_("MOD", frame, MOD_QUERY_TIMEOUT_MS) && this->parse_mod_(frame);
+                if (!query_ok)
+                    ESP_LOGW(TAG, "Failed to read MOD response");
             }
-            if (!mod_ok)
-                ESP_LOGW(TAG, "Failed to read MOD response");
-
-            bool gs_ok = false;
-            for (uint8_t attempt = 0; attempt <= QUERY_RETRY_COUNT && !gs_ok; ++attempt)
+            else
             {
-                if (attempt > 0)
-                {
-                    ESP_LOGW(TAG, "Retrying GS query (%u/%u)", static_cast<unsigned>(attempt + 1),
-                             static_cast<unsigned>(QUERY_RETRY_COUNT + 1));
-                }
-
-                if (!this->query_("GS", frame, GS_QUERY_TIMEOUT_MS))
-                    continue;
-
-                gs_ok = this->parse_gs_(frame);
+                query_ok = this->query_("GS", frame, GS_QUERY_TIMEOUT_MS) && this->parse_gs_(frame);
+                if (!query_ok)
+                    ESP_LOGW(TAG, "Failed to read GS response");
             }
-            if (!gs_ok)
-                ESP_LOGW(TAG, "Failed to read GS response");
 
-            if (mod_ok && gs_ok && !this->initial_config_synced_)
-                this->initial_config_synced_ = this->sync_configuration_();
+            this->poll_mod_next_ = !this->poll_mod_next_;
         }
 
         std::string PI18Component::build_command_(char type, std::string_view cmd)
@@ -251,14 +246,26 @@ namespace esphome
             return out;
         }
 
-        void PI18Component::drain_rx_buffer_()
+        size_t PI18Component::drain_rx_buffer_()
         {
             uint8_t discarded;
-            while (this->available() > 0)
+            uint8_t watchdog = 128;
+            uint8_t yielded = 0;
+            size_t count = 0;
+            while (this->available() > 0 && watchdog-- > 0)
             {
                 if (!this->read_byte(&discarded))
                     break;
+                count++;
+                if (++yielded >= 16)
+                {
+                    yielded = 0;
+                    App.feed_wdt();
+                    delay(0);
+                }
             }
+
+            return count;
         }
 
         bool PI18Component::read_frame_(std::string &out, uint32_t timeout_ms)
@@ -268,6 +275,7 @@ namespace esphome
 
             const uint32_t start = millis();
             bool started = false;
+            uint16_t yielded = 0;
 
             while (millis() - start < timeout_ms)
             {
@@ -286,12 +294,24 @@ namespace esphome
                     if (ch != '^')
                     {
                         ESP_LOGD(TAG, "Skipping stray UART byte 0x%02X before frame start", ch);
+                        if (++yielded >= 16)
+                        {
+                            yielded = 0;
+                            App.feed_wdt();
+                            delay(0);
+                        }
                         continue;
                     }
                     started = true;
                 }
 
                 out.push_back(static_cast<char>(ch));
+                if (++yielded >= 16)
+                {
+                    yielded = 0;
+                    App.feed_wdt();
+                    delay(0);
+                }
                 if (ch == '\r')
                     return true;
             }
@@ -427,25 +447,29 @@ namespace esphome
         bool PI18Component::sync_configuration_()
         {
             std::string frame;
-            bool ok = true;
-
-            if (!this->query_("PIRI", frame, GS_QUERY_TIMEOUT_MS))
+            switch (this->initial_sync_phase_)
             {
-                ESP_LOGW(TAG, "Failed to read PIRI response");
-                ok = false;
+            case InitialSyncPhase::NONE:
+                return true;
+            case InitialSyncPhase::PIRI:
+                if (!this->query_("PIRI", frame, GS_QUERY_TIMEOUT_MS) || !this->parse_piri_(frame))
+                {
+                    ESP_LOGW(TAG, "Failed to read PIRI response");
+                    return false;
+                }
+                this->initial_sync_phase_ = InitialSyncPhase::FLAG;
+                return false;
+            case InitialSyncPhase::FLAG:
+                if (!this->query_("FLAG", frame, MOD_QUERY_TIMEOUT_MS) || !this->parse_flag_(frame))
+                {
+                    ESP_LOGW(TAG, "Failed to read FLAG response");
+                    return false;
+                }
+                this->initial_sync_phase_ = InitialSyncPhase::NONE;
+                return true;
             }
-            else
-                this->parse_piri_(frame);
 
-            if (!this->query_("FLAG", frame, MOD_QUERY_TIMEOUT_MS))
-            {
-                ESP_LOGW(TAG, "Failed to read FLAG response");
-                ok = false;
-            }
-            else
-                this->parse_flag_(frame);
-
-            return ok;
+            return false;
         }
 
         bool PI18Component::parse_piri_(const std::string &frame)
@@ -867,6 +891,75 @@ namespace esphome
                 return;
             }
 
+            this->publish_state(state);
+        }
+
+        void PI18DebugButton::press_action()
+        {
+            if (this->parent_ == nullptr)
+            {
+                ESP_LOGW(TAG, "PI18 button has no parent");
+                return;
+            }
+
+            switch (this->kind_)
+            {
+            case BUTTON_FLUSH_UART:
+            {
+                const size_t discarded = this->parent_->flush_uart_rx();
+                char buffer[32];
+                std::snprintf(buffer, sizeof(buffer), "Flushed %u bytes", static_cast<unsigned>(discarded));
+                ESP_LOGD(TAG, "%s", buffer);
+                this->parent_->publish_manual_response(buffer);
+                break;
+            }
+            case BUTTON_READ_UART:
+            {
+                std::string frame;
+                if (!this->parent_->read_uart_frame(frame, 1000))
+                {
+                    ESP_LOGD(TAG, "UART read button timed out");
+                    this->parent_->publish_manual_response("No UART frame");
+                    break;
+                }
+
+                if (frame.size() >= 3)
+                    frame.resize(frame.size() - 3);
+                ESP_LOGD(TAG, "UART frame: %s", frame.c_str());
+                this->parent_->publish_manual_response(frame);
+                break;
+            }
+            default:
+                ESP_LOGW(TAG, "Unknown PI18 button kind %u", static_cast<unsigned>(this->kind_));
+                return;
+            }
+        }
+
+        void PI18PollingSwitch::setup()
+        {
+            if (this->parent_ == nullptr)
+            {
+                ESP_LOGW(TAG, "PI18 polling switch has no parent");
+                return;
+            }
+
+            this->write_state(this->get_initial_state_with_restore_mode().value_or(true));
+        }
+
+        void PI18PollingSwitch::dump_config()
+        {
+            LOG_SWITCH("", "PI18 Polling Enabled", this);
+        }
+
+        void PI18PollingSwitch::write_state(bool state)
+        {
+            if (this->parent_ == nullptr)
+            {
+                ESP_LOGW(TAG, "PI18 polling switch has no parent");
+                return;
+            }
+
+            this->parent_->set_polling_enabled(state);
             this->publish_state(state);
         }
 

@@ -4,11 +4,22 @@ from esphome.components import uart
 from esphome.const import CONF_ID
 from esphome.core import CoroPriority, coroutine_with_priority
 
-AUTO_LOAD = ["uart", "sensor", "text_sensor", "text", "switch", "select", "number"]
+AUTO_LOAD = [
+    "uart",
+    "sensor",
+    "text_sensor",
+    "text",
+    "switch",
+    "button",
+    "select",
+    "number",
+]
 DEPENDENCIES = ["uart"]
 MULTI_CONF = False
 
 CONF_PI18_ID = "pi18_id"
+BUTTON_FLUSH_UART = 0
+BUTTON_READ_UART = 1
 SELECT_INPUT_VOLTAGE_RANGE = 0
 SELECT_OUTPUT_SOURCE_PRIORITY = 1
 SELECT_CHARGER_SOURCE_PRIORITY = 2

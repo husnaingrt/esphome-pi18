@@ -1,7 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import switch
-from esphome.const import ENTITY_CATEGORY_CONFIG
+from esphome.const import ENTITY_CATEGORY_CONFIG, ENTITY_CATEGORY_DIAGNOSTIC
 
 from . import (
     CONF_PI18_ID,
@@ -19,6 +19,7 @@ from . import (
 )
 
 PI18SettingSwitch = pi18_ns.class_("PI18SettingSwitch", switch.Switch)
+PI18PollingSwitch = pi18_ns.class_("PI18PollingSwitch", switch.Switch, cg.Component)
 
 SWITCH_SETTINGS = (
     ("load_power", SWITCH_LOAD_POWER),
@@ -32,9 +33,16 @@ SWITCH_SETTINGS = (
     ("fault_code_record", SWITCH_FAULT_CODE_RECORD),
 )
 
+CONF_POLLING_ENABLED = "polling_enabled"
+
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.Required(CONF_PI18_ID): cv.use_id(PI18Component),
+        cv.Optional(CONF_POLLING_ENABLED): switch.switch_schema(
+            PI18PollingSwitch,
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            default_restore_mode="RESTORE_DEFAULT_ON",
+        ).extend(cv.COMPONENT_SCHEMA),
         **{
             cv.Optional(key): switch.switch_schema(
                 PI18SettingSwitch,
@@ -48,6 +56,10 @@ CONFIG_SCHEMA = cv.Schema(
 
 async def to_code(config):
     hub = await cg.get_variable(config[CONF_PI18_ID])
+    if polling_enabled_config := config.get(CONF_POLLING_ENABLED):
+        sw = await switch.new_switch(polling_enabled_config)
+        await cg.register_component(sw, polling_enabled_config)
+        await cg.register_parented(sw, hub)
     for key, kind in SWITCH_SETTINGS:
         if setting_config := config.get(key):
             sw = await switch.new_switch(setting_config, kind)

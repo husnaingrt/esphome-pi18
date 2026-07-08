@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include "esphome/components/uart/uart.h"
+#include "esphome/components/button/button.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/number/number.h"
 #include "esphome/components/select/select.h"
@@ -58,6 +59,20 @@ namespace esphome
             SWITCH_KIND_COUNT,
         };
 
+        enum ButtonKind : uint8_t
+        {
+            BUTTON_FLUSH_UART = 0,
+            BUTTON_READ_UART,
+            BUTTON_KIND_COUNT,
+        };
+
+        enum class InitialSyncPhase : uint8_t
+        {
+            NONE = 0,
+            PIRI,
+            FLAG,
+        };
+
         class PI18Component;
 
         class PI18SettingSelect : public select::Select, public Parented<PI18Component>
@@ -88,6 +103,26 @@ namespace esphome
         protected:
             void write_state(bool state) override;
             SwitchKind kind_;
+        };
+
+        class PI18DebugButton : public button::Button, public Parented<PI18Component>
+        {
+        public:
+            explicit PI18DebugButton(uint8_t kind) : kind_(static_cast<ButtonKind>(kind)) {}
+
+        protected:
+            void press_action() override;
+            ButtonKind kind_;
+        };
+
+        class PI18PollingSwitch : public switch_::Switch, public Component, public Parented<PI18Component>
+        {
+        public:
+            void setup() override;
+            void dump_config() override;
+
+        protected:
+            void write_state(bool state) override;
         };
 
         class PI18CommandText : public text::Text, public Component
@@ -171,6 +206,9 @@ namespace esphome
             {
                 return this->send_protocol_command('P', cmd, response, timeout_ms);
             }
+            void set_polling_enabled(bool enabled) { this->polling_enabled_ = enabled; }
+            size_t flush_uart_rx() { return this->drain_rx_buffer_(); }
+            bool read_uart_frame(std::string &out, uint32_t timeout_ms) { return this->read_frame_(out, timeout_ms); }
 
             void setup() override;
             void update() override;
@@ -205,7 +243,10 @@ namespace esphome
             bool has_battery_recharge_voltage_{false};
             float battery_redischarge_voltage_{0.0f};
             bool has_battery_redischarge_voltage_{false};
+            bool polling_enabled_{true};
             bool initial_config_synced_{false};
+            bool poll_mod_next_{true};
+            InitialSyncPhase initial_sync_phase_{InitialSyncPhase::NONE};
             text_sensor::TextSensor *mode_text_{nullptr};
             text_sensor::TextSensor *manual_response_text_{nullptr};
             std::array<select::Select *, SELECT_KIND_COUNT> selects_{};
@@ -216,7 +257,7 @@ namespace esphome
             std::string build_command_(char type, std::string_view cmd);
             bool query_(const char *cmd, std::string &frame, uint32_t timeout_ms);
             bool read_frame_(std::string &out, uint32_t timeout_ms);
-            void drain_rx_buffer_();
+            size_t drain_rx_buffer_();
             bool parse_mod_(const std::string &frame);
             bool parse_gs_(const std::string &payload);
             void publish_mode_(uint8_t code);

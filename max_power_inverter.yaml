@@ -252,6 +252,9 @@ number:
 switch:
   - platform: pi18
     pi18_id: pi18_hub
+    polling_enabled:
+      name: "PI18 Polling Enabled"
+      id: pi18_polling_enabled
     load_power:
       name: "Load Power"
       id: load_power
@@ -288,5 +291,13 @@ text:
 
 # --- Buttons ------------------------------------------------------------------
 button:
+  - platform: pi18
+    pi18_id: pi18_hub
+    flush_uart:
+      name: "PI18 UART Flush"
+      id: pi18_uart_flush
+    read_uart:
+      name: "PI18 UART Read"
+      id: pi18_uart_read
   - platform: restart
     name: "ESP32 Restart"
