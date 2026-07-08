@@ -164,6 +164,12 @@ namespace esphome
 
         void PI18Component::setup()
         {
+            if (this->parent_ == nullptr)
+            {
+                ESP_LOGE(TAG, "UART parent not configured, skipping PI18 setup");
+                this->mark_failed();
+                return;
+            }
             ESP_LOGI(TAG, "PI18 driver init (UART %" PRIu32 " baud)", this->parent_->get_baud_rate());
             this->update();
             this->sync_configuration_();
