@@ -3,13 +3,21 @@ import esphome.config_validation as cv
 from esphome.components import button
 from esphome.const import ENTITY_CATEGORY_DIAGNOSTIC
 
-from . import BUTTON_FLUSH_UART, BUTTON_READ_UART, CONF_PI18_ID, PI18Component, pi18_ns
+from . import (
+    BUTTON_FLUSH_UART,
+    BUTTON_READ_UART,
+    BUTTON_SYNC_CONFIGURATION,
+    CONF_PI18_ID,
+    PI18Component,
+    pi18_ns,
+)
 
 PI18DebugButton = pi18_ns.class_("PI18DebugButton", button.Button)
 
 BUTTONS = (
     ("flush_uart", BUTTON_FLUSH_UART),
     ("read_uart", BUTTON_READ_UART),
+    ("sync_configuration", BUTTON_SYNC_CONFIGURATION),
 )
 
 CONFIG_SCHEMA = cv.Schema(

@@ -299,5 +299,13 @@ button:
     read_uart:
       name: "PI18 UART Read"
       id: pi18_uart_read
+    sync_configuration:
+      name: "PI18 Sync Configuration"
+      id: pi18_sync_configuration
+
   - platform: restart
-    name: "ESP32 Restart"
+    name: "ESP32 Restart"  
+  - platform: shutdown
+    name: "ESP32 Shutdown"
+  - platform: factory_reset
+    name: "ESP32 Reset"

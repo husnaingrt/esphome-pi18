@@ -22,7 +22,9 @@ namespace esphome
             static const char *const TAG = "pi18";
             static constexpr uint32_t MOD_QUERY_TIMEOUT_MS = 500;
             static constexpr uint32_t GS_QUERY_TIMEOUT_MS = 1200;
-            static constexpr uint8_t QUERY_RETRY_COUNT = 1;
+            static constexpr uint32_t COMMAND_GAP_MS = 100;
+            static constexpr uint32_t PIRI_POLL_RETRY_MS = 25;
+            static constexpr uint32_t PIRI_RESPONSE_TIMEOUT_MS = 300;
             static constexpr size_t GS_MIN_FIELDS = 19;
             static constexpr size_t GS_MAX_FIELDS = 32;
             static constexpr size_t FRAME_HEADER_SIZE = 8;
@@ -171,7 +173,6 @@ namespace esphome
                 return;
             }
             ESP_LOGI(TAG, "PI18 driver init (UART %" PRIu32 " baud)", this->parent_->get_baud_rate());
-            this->initial_sync_phase_ = InitialSyncPhase::PIRI;
         }
 
         void PI18Component::dump_config()
@@ -193,32 +194,14 @@ namespace esphome
 
             if (!this->initial_config_synced_)
             {
-                if (this->sync_configuration_())
+                if (this->sync_configuration())
                 {
-                    this->initial_config_synced_ = true;
-                    this->poll_mod_next_ = true;
                     ESP_LOGI(TAG, "PI18 initial configuration synced");
                 }
                 return;
             }
 
-            std::string frame;
-            bool query_ok = false;
-
-            if (this->poll_mod_next_)
-            {
-                query_ok = this->query_("MOD", frame, MOD_QUERY_TIMEOUT_MS) && this->parse_mod_(frame);
-                if (!query_ok)
-                    ESP_LOGW(TAG, "Failed to read MOD response");
-            }
-            else
-            {
-                query_ok = this->query_("GS", frame, GS_QUERY_TIMEOUT_MS) && this->parse_gs_(frame);
-                if (!query_ok)
-                    ESP_LOGW(TAG, "Failed to read GS response");
-            }
-
-            this->poll_mod_next_ = !this->poll_mod_next_;
+            this->start_piri_polling_();
         }
 
         std::string PI18Component::build_command_(char type, std::string_view cmd)
@@ -319,22 +302,50 @@ namespace esphome
             return false;
         }
 
-        bool PI18Component::query_(const char *cmd, std::string &frame, uint32_t timeout_ms)
+        bool PI18Component::sync_configuration()
         {
-            this->drain_rx_buffer_();
+            this->cancel_piri_poll_();
+            const bool ok = this->sync_configuration_();
+            if (ok)
+            {
+                this->initial_config_synced_ = true;
+                if (this->polling_enabled_)
+                    this->start_piri_polling_();
+            }
+            return ok;
+        }
 
-            std::string request = this->build_command_('P', cmd);
-            if (request.empty())
-                return false;
+        void PI18Component::set_polling_enabled(bool enabled)
+        {
+            this->polling_enabled_ = enabled;
+            if (!enabled)
+            {
+                this->cancel_piri_poll_();
+                this->cancel_interval("piri_poll");
+                this->piri_poll_started_ = false;
+                return;
+            }
 
-            ESP_LOGD(TAG, "TX %s", cmd);
-            this->write_array(reinterpret_cast<const uint8_t *>(request.data()), request.size());
+            if (this->initial_config_synced_)
+                this->start_piri_polling_();
+        }
 
-            if (!this->read_frame_(frame, timeout_ms))
-                return false;
+        void PI18Component::start_piri_polling_()
+        {
+            if (this->piri_poll_started_ || !this->polling_enabled_)
+                return;
 
-            this->log_frame_(cmd, frame);
-            return true;
+            this->piri_poll_started_ = true;
+            this->set_interval("piri_poll", this->get_update_interval(), [this]() { this->poll_piri_(); });
+            this->cancel_interval(InternalSchedulerID::POLLING_UPDATE);
+        }
+
+        void PI18Component::cancel_piri_poll_()
+        {
+            this->cancel_timeout("piri_read");
+            this->piri_poll_pending_ = false;
+            this->piri_poll_started_at_ = 0;
+            this->piri_poll_frame_len_ = 0;
         }
 
         bool PI18Component::parse_mod_(const std::string &frame)
@@ -437,48 +448,181 @@ namespace esphome
             return true;
         }
 
-        void PI18Component::log_frame_(const char *label, std::string frame) const
+        void PI18Component::log_frame_(const char *label, std::string_view frame) const
         {
             while (!frame.empty() && (frame.back() == '\r' || frame.back() == '\n'))
-                frame.pop_back();
-            ESP_LOGD(TAG, "%s: %s", label, frame.c_str());
+                frame.remove_suffix(1);
+            ESP_LOGD(TAG, "%s: %.*s", label, static_cast<int>(frame.size()), frame.data());
+        }
+
+        bool PI18Component::poll_piri_()
+        {
+            if (!this->polling_enabled_ || this->parent_ == nullptr)
+                return false;
+
+            const uint32_t now = millis();
+
+            if (!this->piri_poll_pending_)
+            {
+                if (!this->uart_mutex_.try_lock())
+                    return false;
+
+                this->cancel_timeout("piri_read");
+                this->piri_poll_frame_len_ = 0;
+
+                const bool sent = this->send_protocol_command_locked_('P', "PIRI", nullptr, 0);
+                this->uart_mutex_.unlock();
+                if (!sent)
+                    return false;
+
+                this->piri_poll_pending_ = true;
+                this->piri_poll_started_at_ = now;
+                this->set_timeout("piri_read", PIRI_POLL_RETRY_MS, [this]() { this->poll_piri_(); });
+                return true;
+            }
+
+            if (now - this->piri_poll_started_at_ > PIRI_RESPONSE_TIMEOUT_MS)
+            {
+                ESP_LOGW(TAG, "PIRI poll timed out");
+                this->cancel_piri_poll_();
+                return false;
+            }
+
+            if (!this->uart_mutex_.try_lock())
+            {
+                this->set_timeout("piri_read", PIRI_POLL_RETRY_MS, [this]() { this->poll_piri_(); });
+                return false;
+            }
+
+            bool complete = false;
+            bool overflow = false;
+            while (this->available() > 0)
+            {
+                uint8_t ch = 0;
+                if (!this->read_byte(&ch))
+                    break;
+
+                if (this->piri_poll_frame_len_ == 0 && ch != '^')
+                    continue;
+
+                if (this->piri_poll_frame_len_ + 1 >= this->piri_poll_frame_.size())
+                {
+                    overflow = true;
+                    break;
+                }
+
+                this->piri_poll_frame_[this->piri_poll_frame_len_++] = static_cast<char>(ch);
+                if (ch == '\r')
+                {
+                    this->piri_poll_frame_[this->piri_poll_frame_len_] = '\0';
+                    complete = true;
+                    break;
+                }
+            }
+
+            this->uart_mutex_.unlock();
+
+            if (overflow)
+            {
+                ESP_LOGW(TAG, "PIRI frame too large");
+                this->cancel_piri_poll_();
+                return false;
+            }
+
+            if (!complete)
+            {
+                this->set_timeout("piri_read", PIRI_POLL_RETRY_MS, [this]() { this->poll_piri_(); });
+                return false;
+            }
+
+            std::string_view frame(this->piri_poll_frame_.data(), this->piri_poll_frame_len_);
+            this->log_frame_("PIRI", frame);
+            if (!this->parse_piri_(frame))
+            {
+                ESP_LOGW(TAG, "Failed to parse PIRI response");
+                this->cancel_piri_poll_();
+                return false;
+            }
+
+            this->cancel_piri_poll_();
+            return true;
         }
 
         bool PI18Component::sync_configuration_()
         {
-            std::string frame;
-            switch (this->initial_sync_phase_)
+            bool ok = true;
+            bool piri_ok = false;
+            bool mod_ok = false;
+            bool gs_ok = false;
+            bool flag_ok = false;
+            std::string piri_frame;
+            std::string mod_frame;
+            std::string gs_frame;
+            std::string flag_frame;
+
+            if (!this->uart_mutex_.try_lock())
             {
-            case InitialSyncPhase::NONE:
-                return true;
-            case InitialSyncPhase::PIRI:
-                if (!this->query_("PIRI", frame, GS_QUERY_TIMEOUT_MS) || !this->parse_piri_(frame))
-                {
-                    ESP_LOGW(TAG, "Failed to read PIRI response");
-                    return false;
-                }
-                this->initial_sync_phase_ = InitialSyncPhase::FLAG;
+                ESP_LOGW(TAG, "UART busy, cannot sync PI18 configuration");
                 return false;
-            case InitialSyncPhase::FLAG:
-                if (!this->query_("FLAG", frame, MOD_QUERY_TIMEOUT_MS) || !this->parse_flag_(frame))
-                {
-                    ESP_LOGW(TAG, "Failed to read FLAG response");
-                    return false;
-                }
-                this->initial_sync_phase_ = InitialSyncPhase::NONE;
-                return true;
             }
 
-            return false;
+            piri_ok = this->query_locked_("PIRI", piri_frame, GS_QUERY_TIMEOUT_MS);
+            delay(COMMAND_GAP_MS);
+            mod_ok = this->query_locked_("MOD", mod_frame, MOD_QUERY_TIMEOUT_MS);
+            delay(COMMAND_GAP_MS);
+            gs_ok = this->query_locked_("GS", gs_frame, GS_QUERY_TIMEOUT_MS);
+            delay(COMMAND_GAP_MS);
+            flag_ok = this->query_locked_("FLAG", flag_frame, MOD_QUERY_TIMEOUT_MS);
+            this->uart_mutex_.unlock();
+
+            if (!piri_ok)
+            {
+                ESP_LOGW(TAG, "Failed to read PIRI response");
+                ok = false;
+            }
+            else if (!this->parse_piri_(piri_frame))
+            {
+                ESP_LOGW(TAG, "Failed to parse PIRI response");
+                ok = false;
+            }
+
+            if (!mod_ok)
+            {
+                ESP_LOGW(TAG, "Failed to read MOD response");
+                ok = false;
+            }
+            else if (!this->parse_mod_(mod_frame))
+            {
+                ESP_LOGW(TAG, "Failed to parse MOD response");
+                ok = false;
+            }
+
+            if (!gs_ok)
+            {
+                ESP_LOGW(TAG, "Failed to read GS response");
+                ok = false;
+            }
+            else if (!this->parse_gs_(gs_frame))
+            {
+                ESP_LOGW(TAG, "Failed to parse GS response");
+                ok = false;
+            }
+
+            if (!flag_ok)
+                ESP_LOGW(TAG, "Failed to read FLAG response");
+            else if (!this->parse_flag_(flag_frame))
+                ESP_LOGW(TAG, "Failed to parse FLAG response");
+
+            return ok;
         }
 
-        bool PI18Component::parse_piri_(const std::string &frame)
+        bool PI18Component::parse_piri_(std::string_view frame)
         {
             std::string_view view = strip_frame_suffix(frame);
             const size_t dpos = view.find("^D");
             if (dpos == std::string_view::npos || view.size() <= dpos + 5)
             {
-                ESP_LOGW(TAG, "Unexpected PIRI response: %s", frame.c_str());
+                ESP_LOGW(TAG, "Unexpected PIRI response: %.*s", static_cast<int>(frame.size()), frame.data());
                 return false;
             }
 
@@ -568,13 +712,13 @@ namespace esphome
             return true;
         }
 
-        bool PI18Component::parse_flag_(const std::string &frame)
+        bool PI18Component::parse_flag_(std::string_view frame)
         {
             std::string_view view = strip_frame_suffix(frame);
             const size_t dpos = view.find("^D");
             if (dpos == std::string_view::npos || view.size() <= dpos + 5)
             {
-                ESP_LOGW(TAG, "Unexpected FLAG response: %s", frame.c_str());
+                ESP_LOGW(TAG, "Unexpected FLAG response: %.*s", static_cast<int>(frame.size()), frame.data());
                 return false;
             }
 
@@ -620,6 +764,30 @@ namespace esphome
 
         bool PI18Component::send_protocol_command(char type, std::string_view cmd, std::string *response,
                                                   uint32_t timeout_ms)
+        {
+            if (!this->uart_mutex_.try_lock())
+            {
+                ESP_LOGW(TAG, "UART busy, skipping PI18 command");
+                return false;
+            }
+
+            this->cancel_piri_poll_();
+            const bool ok = this->send_protocol_command_locked_(type, cmd, response, timeout_ms);
+            this->uart_mutex_.unlock();
+            return ok;
+        }
+
+        bool PI18Component::query_locked_(const char *cmd, std::string &frame, uint32_t timeout_ms)
+        {
+            if (!this->send_protocol_command_locked_('P', cmd, &frame, timeout_ms))
+                return false;
+
+            this->log_frame_(cmd, frame);
+            return true;
+        }
+
+        bool PI18Component::send_protocol_command_locked_(char type, std::string_view cmd, std::string *response,
+                                                          uint32_t timeout_ms)
         {
             this->drain_rx_buffer_();
 
@@ -927,6 +1095,14 @@ namespace esphome
                     frame.resize(frame.size() - 3);
                 ESP_LOGD(TAG, "UART frame: %s", frame.c_str());
                 this->parent_->publish_manual_response(frame);
+                break;
+            }
+            case BUTTON_SYNC_CONFIGURATION:
+            {
+                const bool ok = this->parent_->sync_configuration();
+                ESP_LOGI(TAG, "PI18 sync configuration %s", ok ? "completed" : "failed");
+                if (this->parent_->has_manual_response_text_sensor())
+                    this->parent_->publish_manual_response(ok ? "Sync complete" : "Sync failed");
                 break;
             }
             default:

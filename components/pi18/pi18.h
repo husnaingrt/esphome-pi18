@@ -9,6 +9,7 @@
 #include "esphome/components/text/text.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/core/component.h"
+#include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 #include <cstdint>
 #include <string>
@@ -63,14 +64,8 @@ namespace esphome
         {
             BUTTON_FLUSH_UART = 0,
             BUTTON_READ_UART,
+            BUTTON_SYNC_CONFIGURATION,
             BUTTON_KIND_COUNT,
-        };
-
-        enum class InitialSyncPhase : uint8_t
-        {
-            NONE = 0,
-            PIRI,
-            FLAG,
         };
 
         class PI18Component;
@@ -200,15 +195,32 @@ namespace esphome
             }
             bool has_manual_response_text_sensor() const { return this->manual_response_text_ != nullptr; }
             void publish_manual_response(const std::string &state);
+            bool sync_configuration();
             bool send_protocol_command(char type, std::string_view cmd, std::string *response = nullptr,
                                        uint32_t timeout_ms = 0);
             bool send_manual_command(const std::string &cmd, std::string *response = nullptr, uint32_t timeout_ms = 0)
             {
                 return this->send_protocol_command('P', cmd, response, timeout_ms);
             }
-            void set_polling_enabled(bool enabled) { this->polling_enabled_ = enabled; }
-            size_t flush_uart_rx() { return this->drain_rx_buffer_(); }
-            bool read_uart_frame(std::string &out, uint32_t timeout_ms) { return this->read_frame_(out, timeout_ms); }
+            void set_polling_enabled(bool enabled);
+            size_t flush_uart_rx()
+            {
+                if (!this->uart_mutex_.try_lock())
+                    return 0;
+                this->cancel_piri_poll_();
+                size_t discarded = this->drain_rx_buffer_();
+                this->uart_mutex_.unlock();
+                return discarded;
+            }
+            bool read_uart_frame(std::string &out, uint32_t timeout_ms)
+            {
+                if (!this->uart_mutex_.try_lock())
+                    return false;
+                this->cancel_piri_poll_();
+                bool ok = this->read_frame_(out, timeout_ms);
+                this->uart_mutex_.unlock();
+                return ok;
+            }
 
             void setup() override;
             void update() override;
@@ -216,9 +228,12 @@ namespace esphome
             float get_setup_priority() const override { return setup_priority::DATA; }
 
         private:
+            void start_piri_polling_();
+            void cancel_piri_poll_();
+            bool poll_piri_();
             bool sync_configuration_();
-            bool parse_piri_(const std::string &frame);
-            bool parse_flag_(const std::string &frame);
+            bool parse_piri_(std::string_view frame);
+            bool parse_flag_(std::string_view frame);
 
             // sensors
             sensor::Sensor *grid_voltage_{nullptr};
@@ -245,8 +260,13 @@ namespace esphome
             bool has_battery_redischarge_voltage_{false};
             bool polling_enabled_{true};
             bool initial_config_synced_{false};
-            bool poll_mod_next_{true};
-            InitialSyncPhase initial_sync_phase_{InitialSyncPhase::NONE};
+            bool piri_poll_started_{false};
+            bool piri_poll_pending_{false};
+            uint32_t piri_poll_started_at_{0};
+            static constexpr size_t PIRI_FRAME_BUFFER_SIZE = 256;
+            std::array<char, PIRI_FRAME_BUFFER_SIZE> piri_poll_frame_{};
+            size_t piri_poll_frame_len_{0};
+            Mutex uart_mutex_;
             text_sensor::TextSensor *mode_text_{nullptr};
             text_sensor::TextSensor *manual_response_text_{nullptr};
             std::array<select::Select *, SELECT_KIND_COUNT> selects_{};
@@ -255,13 +275,15 @@ namespace esphome
 
             // helpers
             std::string build_command_(char type, std::string_view cmd);
-            bool query_(const char *cmd, std::string &frame, uint32_t timeout_ms);
+            bool query_locked_(const char *cmd, std::string &frame, uint32_t timeout_ms);
+            bool send_protocol_command_locked_(char type, std::string_view cmd, std::string *response = nullptr,
+                                               uint32_t timeout_ms = 0);
             bool read_frame_(std::string &out, uint32_t timeout_ms);
             size_t drain_rx_buffer_();
             bool parse_mod_(const std::string &frame);
             bool parse_gs_(const std::string &payload);
             void publish_mode_(uint8_t code);
-            void log_frame_(const char *label, std::string frame) const;
+            void log_frame_(const char *label, std::string_view frame) const;
 
             // pi18 CRC (16-bit). See protocol docs & open-source implementations.
             static uint16_t crc16_pi18_(const uint8_t *data, size_t len);
