@@ -266,6 +266,7 @@ namespace esphome
             static constexpr size_t PIRI_FRAME_BUFFER_SIZE = 256;
             std::array<char, PIRI_FRAME_BUFFER_SIZE> piri_poll_frame_{};
             size_t piri_poll_frame_len_{0};
+            size_t piri_poll_expected_len_{0};
             Mutex uart_mutex_;
             text_sensor::TextSensor *mode_text_{nullptr};
             text_sensor::TextSensor *manual_response_text_{nullptr};

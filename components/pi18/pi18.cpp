@@ -346,19 +346,19 @@ namespace esphome
             this->piri_poll_pending_ = false;
             this->piri_poll_started_at_ = 0;
             this->piri_poll_frame_len_ = 0;
+            this->piri_poll_expected_len_ = 0;
         }
 
         bool PI18Component::parse_mod_(const std::string &frame)
         {
             std::string_view view = strip_frame_suffix(frame);
-            const size_t dpos = view.find("^D");
-            if (dpos == std::string_view::npos || view.size() <= dpos + 5)
+            if (!view.starts_with("^D") || view.size() <= 5)
             {
                 ESP_LOGW(TAG, "Unexpected MOD response: %s", frame.c_str());
                 return false;
             }
 
-            size_t pos = dpos + 5;
+            size_t pos = 5;
             size_t end = pos;
             while (end < view.size() && std::isdigit(static_cast<unsigned char>(view[end])))
                 ++end;
@@ -383,14 +383,13 @@ namespace esphome
         bool PI18Component::parse_gs_(const std::string &payload)
         {
             std::string_view view = strip_frame_suffix(payload);
-            const size_t dpos = view.find("^D");
-            if (dpos == std::string_view::npos || view.size() <= dpos + 5)
+            if (!view.starts_with("^D") || view.size() <= 5)
             {
                 ESP_LOGW(TAG, "Unexpected GS response: %s", payload.c_str());
                 return false;
             }
 
-            std::string_view csv = view.substr(dpos + 5);
+            std::string_view csv = view.substr(5);
             const size_t csv_cut = csv.find_first_not_of("0123456789,");
             if (csv_cut != std::string_view::npos)
                 csv = csv.substr(0, csv_cut);
@@ -461,6 +460,10 @@ namespace esphome
                 return false;
 
             const uint32_t now = millis();
+            auto reset_frame = [this]() {
+                this->piri_poll_frame_len_ = 0;
+                this->piri_poll_expected_len_ = 0;
+            };
 
             if (!this->piri_poll_pending_)
             {
@@ -468,7 +471,7 @@ namespace esphome
                     return false;
 
                 this->cancel_timeout("piri_read");
-                this->piri_poll_frame_len_ = 0;
+                reset_frame();
 
                 const bool sent = this->send_protocol_command_locked_('P', "PIRI", nullptr, 0);
                 this->uart_mutex_.unlock();
@@ -505,18 +508,51 @@ namespace esphome
                 if (this->piri_poll_frame_len_ == 0 && ch != '^')
                     continue;
 
-                if (this->piri_poll_frame_len_ + 1 >= this->piri_poll_frame_.size())
+                if (this->piri_poll_frame_len_ == 1 && ch != 'D')
+                {
+                    reset_frame();
+                    continue;
+                }
+
+                if (this->piri_poll_frame_len_ + 1 > this->piri_poll_frame_.size())
                 {
                     overflow = true;
                     break;
                 }
 
                 this->piri_poll_frame_[this->piri_poll_frame_len_++] = static_cast<char>(ch);
-                if (ch == '\r')
+                if (this->piri_poll_frame_len_ == 5)
                 {
-                    this->piri_poll_frame_[this->piri_poll_frame_len_] = '\0';
+                    uint8_t payload_len = 0;
+                    if (!parse_uint8(std::string_view(this->piri_poll_frame_.data() + 2, 3), &payload_len))
+                    {
+                        reset_frame();
+                        continue;
+                    }
+
+                    this->piri_poll_expected_len_ = static_cast<size_t>(payload_len) + 4;
+                    if (this->piri_poll_expected_len_ < 8 || this->piri_poll_expected_len_ > this->piri_poll_frame_.size())
+                    {
+                        reset_frame();
+                        continue;
+                    }
+                }
+
+                if (this->piri_poll_expected_len_ != 0 && this->piri_poll_frame_len_ == this->piri_poll_expected_len_)
+                {
+                    if (this->piri_poll_frame_[this->piri_poll_frame_len_ - 1] != '\r')
+                    {
+                        reset_frame();
+                        continue;
+                    }
                     complete = true;
                     break;
+                }
+
+                if (this->piri_poll_expected_len_ != 0 && this->piri_poll_frame_len_ > this->piri_poll_expected_len_)
+                {
+                    reset_frame();
+                    continue;
                 }
             }
 
@@ -619,14 +655,13 @@ namespace esphome
         bool PI18Component::parse_piri_(std::string_view frame)
         {
             std::string_view view = strip_frame_suffix(frame);
-            const size_t dpos = view.find("^D");
-            if (dpos == std::string_view::npos || view.size() <= dpos + 5)
+            if (!view.starts_with("^D") || view.size() <= 5)
             {
                 ESP_LOGW(TAG, "Unexpected PIRI response: %.*s", static_cast<int>(frame.size()), frame.data());
                 return false;
             }
 
-            std::string_view csv = view.substr(dpos + 5);
+            std::string_view csv = view.substr(5);
             const size_t csv_cut = csv.find_first_not_of("0123456789,");
             if (csv_cut != std::string_view::npos)
                 csv = csv.substr(0, csv_cut);
@@ -715,14 +750,13 @@ namespace esphome
         bool PI18Component::parse_flag_(std::string_view frame)
         {
             std::string_view view = strip_frame_suffix(frame);
-            const size_t dpos = view.find("^D");
-            if (dpos == std::string_view::npos || view.size() <= dpos + 5)
+            if (!view.starts_with("^D") || view.size() <= 5)
             {
                 ESP_LOGW(TAG, "Unexpected FLAG response: %.*s", static_cast<int>(frame.size()), frame.data());
                 return false;
             }
 
-            std::string_view csv = view.substr(dpos + 5);
+            std::string_view csv = view.substr(5);
             const size_t csv_cut = csv.find_first_not_of("01,");
             if (csv_cut != std::string_view::npos)
                 csv = csv.substr(0, csv_cut);
